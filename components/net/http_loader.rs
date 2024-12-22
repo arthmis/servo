@@ -36,6 +36,7 @@ use hyper_serde::Serde;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_channel::router::ROUTER;
 use log::{debug, error, info, log_enabled, warn};
+use net_traits::environment::EmbedderPolicyValue;
 use net_traits::http_status::HttpStatus;
 use net_traits::pub_domains::reg_suffix;
 use net_traits::request::Origin::Origin as SpecificOrigin;
@@ -1143,7 +1144,7 @@ async fn http_network_or_cache_fetch(
     };
 
     // Step 8.3: Let includeCredentials be true if one of:
-    let include_credentials = match http_request.credentials_mode {
+    let mut include_credentials = match http_request.credentials_mode {
         // request’s credentials mode is "include"
         CredentialsMode::Include => true,
         // request’s credentials mode is "same-origin" and request’s response tainting is "basic"
@@ -1158,6 +1159,27 @@ async fn http_network_or_cache_fetch(
     // Step 8.4: If Cross-Origin-Embedder-Policy allows credentials with request returns false, then
     // set includeCredentials to false.
     // TODO(#33616): Requires request's client object
+    fn cross_origin_embedder_policy_allows_credentials(request: &Request) -> bool {
+        if let Origin::Origin(origin) = &request.origin {
+            if request.mode != RequestMode::NoCors ||
+                request.client.is_none() ||
+                request.client.embedder_policy_value() !=
+                    EmbedderPolicyValue::CredentialLess ||
+                (*origin == request.current_url().origin() &&
+                    !request_has_redirect_tainted_origin(request))
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    if !cross_origin_embedder_policy_allows_credentials(http_request) {
+        include_credentials = false;
+    }
+
+    // if cross_origin_embe
 
     // Step 8.5 Let contentLength be httpRequest’s body’s length, if httpRequest’s body is non-null;
     // otherwise null.

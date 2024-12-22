@@ -6,6 +6,7 @@ use content_security_policy::CspList;
 use malloc_size_of_derive::MallocSizeOf;
 use serde::{Deserialize, Serialize};
 
+use crate::environment::EmbedderPolicy;
 use crate::ReferrerPolicy;
 
 /// When a policy container is associated with a request, it has an additional state of "Client". As
@@ -34,7 +35,7 @@ pub struct PolicyContainer {
     /// <https://html.spec.whatwg.org/multipage/#policy-container-referrer-policy>
     referrer_policy: ReferrerPolicy,
     // https://html.spec.whatwg.org/multipage/#policy-container-embedder-policy
-    // TODO: Embedder Policy
+    pub embedder_policy: EmbedderPolicy,
 }
 
 impl PolicyContainer {

@@ -15,6 +15,7 @@ use mime::Mime;
 use serde::{Deserialize, Serialize};
 use servo_url::{ImmutableOrigin, ServoUrl};
 
+use crate::environment::RequestClient;
 use crate::policy_container::{PolicyContainer, RequestPolicyContainer};
 use crate::response::HttpsState;
 use crate::{ReferrerPolicy, ResourceTimingType};
@@ -477,7 +478,8 @@ pub struct Request {
     pub unsafe_request: bool,
     /// <https://fetch.spec.whatwg.org/#concept-request-body>
     pub body: Option<RequestBody>,
-    // TODO: client object
+    /// https://fetch.spec.whatwg.org/#concept-request-client
+    pub client: RequestClient,
     pub window: Window,
     // TODO: target browsing context
     /// <https://fetch.spec.whatwg.org/#request-keepalive-flag>
@@ -570,6 +572,7 @@ impl Request {
             policy_container: RequestPolicyContainer::Client,
             https_state,
             crash: None,
+            client: RequestClient { environment_settings: None },
         }
     }
 
