@@ -35,6 +35,7 @@ use hyper::server::Server as HyperServer;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request as HyperRequest, Response as HyperResponse};
 use net::fetch::cors_cache::CorsCache;
+use net::fetch::fetch_params::FetchParams;
 use net::fetch::methods::{self, CancellationListener, FetchContext};
 use net::filemanager_thread::FileManager;
 use net::protocols::ProtocolRegistry;
@@ -129,11 +130,11 @@ impl FetchTaskTarget for FetchResponseCollector {
     }
 }
 
-fn fetch(request: &mut Request, dc: Option<Sender<DevtoolsControlMsg>>) -> Response {
+fn fetch(request: &mut FetchParams, dc: Option<Sender<DevtoolsControlMsg>>) -> Response {
     fetch_with_context(request, &mut new_fetch_context(dc, None, None))
 }
 
-fn fetch_with_context(request: &mut Request, mut context: &mut FetchContext) -> Response {
+fn fetch_with_context(request: &mut FetchParams, mut context: &mut FetchContext) -> Response {
     let (sender, receiver) = unbounded();
     let mut target = FetchResponseCollector { sender: sender };
     block_on(async move {
@@ -142,7 +143,7 @@ fn fetch_with_context(request: &mut Request, mut context: &mut FetchContext) -> 
     })
 }
 
-fn fetch_with_cors_cache(request: &mut Request, cache: &mut CorsCache) -> Response {
+fn fetch_with_cors_cache(request: &mut FetchParams, cache: &mut CorsCache) -> Response {
     let (sender, receiver) = unbounded();
     let mut target = FetchResponseCollector { sender: sender };
     block_on(async move {

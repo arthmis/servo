@@ -68,6 +68,7 @@ use crate::cookie::ServoCookie;
 use crate::cookie_storage::CookieStorage;
 use crate::decoder::Decoder;
 use crate::fetch::cors_cache::CorsCache;
+use crate::fetch::fetch_params::FetchParams;
 use crate::fetch::headers::{SecFetchDest, SecFetchMode, SecFetchSite, SecFetchUser};
 use crate::fetch::methods::{main_fetch, Data, DoneChannel, FetchContext, Target};
 use crate::hsts::HstsList;
@@ -730,7 +731,7 @@ async fn obtain_response(
 #[async_recursion]
 #[allow(clippy::too_many_arguments)]
 pub async fn http_fetch(
-    request: &mut Request,
+    fetch_params: &mut FetchParams,
     cache: &mut CorsCache,
     cors_flag: bool,
     cors_preflight_flag: bool,
@@ -748,7 +749,7 @@ pub async fn http_fetch(
     // nothing to do, since actual_response is a function on response
 
     // Step 3
-    if request.service_workers_mode == ServiceWorkersMode::All {
+    if fetch_params.request.service_workers_mode == ServiceWorkersMode::All {
         // TODO: Substep 1
         // Set response to the result of invoking handle fetch for request.
 
@@ -761,10 +762,12 @@ pub async fn http_fetch(
             // nothing to do, since actual_response is a function on response
 
             // Subsubstep 3
-            if (res.response_type == ResponseType::Opaque && request.mode != RequestMode::NoCors) ||
+            if (res.response_type == ResponseType::Opaque &&
+                fetch_params.request.mode != RequestMode::NoCors) ||
                 (res.response_type == ResponseType::OpaqueRedirect &&
-                    request.redirect_mode != RedirectMode::Manual) ||
-                (res.url_list.len() > 1 && request.redirect_mode != RedirectMode::Follow) ||
+                    fetch_params.request.redirect_mode != RedirectMode::Manual) ||
+                (res.url_list.len() > 1 &&
+                    fetch_params.request.redirect_mode != RedirectMode::Follow) ||
                 res.is_network_error()
             {
                 return Response::network_error(NetworkError::Internal("Request failed".into()));
@@ -779,18 +782,21 @@ pub async fn http_fetch(
     if response.is_none() {
         // Substep 1
         if cors_preflight_flag {
-            let method_cache_match = cache.match_method(&*request, request.method.clone());
+            let method_cache_match =
+                cache.match_method(&fetch_params.request, fetch_params.request.method.clone());
 
             let method_mismatch = !method_cache_match &&
-                (!is_cors_safelisted_method(&request.method) || request.use_cors_preflight);
-            let header_mismatch = request.headers.iter().any(|(name, value)| {
-                !cache.match_header(&*request, name) &&
+                (!is_cors_safelisted_method(&fetch_params.request.method) ||
+                    fetch_params.request.use_cors_preflight);
+            let header_mismatch = fetch_params.request.headers.iter().any(|(name, value)| {
+                !cache.match_header(&fetch_params.request, name) &&
                     !is_cors_safelisted_request_header(&name, &value)
             });
 
             // Sub-substep 1
             if method_mismatch || header_mismatch {
-                let preflight_result = cors_preflight_fetch(request, cache, context).await;
+                let preflight_result =
+                    cors_preflight_fetch(&fetch_params.request, cache, context).await;
                 // Sub-substep 2
                 if let Some(e) = preflight_result.get_network_error() {
                     return Response::network_error(e.clone());
@@ -799,8 +805,8 @@ pub async fn http_fetch(
         }
 
         // Substep 2
-        if request.redirect_mode == RedirectMode::Follow {
-            request.service_workers_mode = ServiceWorkersMode::None;
+        if fetch_params.request.redirect_mode == RedirectMode::Follow {
+            fetch_params.request.service_workers_mode = ServiceWorkersMode::None;
         }
 
         // Generally, we use a persistent connection, so we will also set other PerformanceResourceTiming
@@ -813,7 +819,7 @@ pub async fn http_fetch(
             .set_attribute(ResourceAttribute::RequestStart);
 
         let mut fetch_result = http_network_or_cache_fetch(
-            request,
+            fetch_params,
             authentication_fetch_flag,
             cors_flag,
             done_chan,
@@ -822,7 +828,7 @@ pub async fn http_fetch(
         .await;
 
         // Substep 4
-        if cors_flag && cors_check(request, &fetch_result).is_err() {
+        if cors_flag && cors_check(&fetch_params.request, &fetch_result).is_err() {
             return Response::network_error(NetworkError::Internal("CORS check failed".into()));
         }
 
@@ -864,14 +870,14 @@ pub async fn http_fetch(
         // Substep 4.
         if let Some(Ok(ref mut location)) = location {
             if location.fragment().is_none() {
-                let current_url = request.current_url();
+                let current_url = fetch_params.request.current_url();
                 location.set_fragment(current_url.fragment());
             }
         }
         response.actual_response_mut().location_url = location;
 
         // Substep 5.
-        response = match request.redirect_mode {
+        response = match fetch_params.request.redirect_mode {
             RedirectMode::Error => {
                 Response::network_error(NetworkError::Internal("Redirect mode error".into()))
             },
@@ -880,7 +886,13 @@ pub async fn http_fetch(
                 // set back to default
                 response.return_internal = true;
                 http_redirect_fetch(
-                    request, cache, response, cors_flag, target, done_chan, context,
+                    fetch_params,
+                    cache,
+                    response,
+                    cors_flag,
+                    target,
+                    done_chan,
+                    context,
                 )
                 .await
             },
@@ -894,7 +906,7 @@ pub async fn http_fetch(
         .lock()
         .unwrap()
         .set_attribute(ResourceAttribute::RedirectCount(
-            request.redirect_count as u16,
+            fetch_params.request.redirect_count as u16,
         ));
 
     response.resource_timing = Arc::clone(&context.timing);
@@ -927,7 +939,7 @@ impl Drop for RedirectEndTimer {
 /// [HTTP redirect fetch](https://fetch.spec.whatwg.org#http-redirect-fetch)
 #[async_recursion]
 pub async fn http_redirect_fetch(
-    request: &mut Request,
+    fetch_params: &mut FetchParams,
     cache: &mut CorsCache,
     response: Response,
     cors_flag: bool,
@@ -990,6 +1002,7 @@ pub async fn http_redirect_fetch(
             ResourceTimeValue::RedirectStart,
         )); // updates start_time only if redirect_start is nonzero (implying TAO)
 
+    let request = &mut fetch_params.request;
     // Step 7: If request’s redirect count is 20, then return a network error.
     if request.redirect_count >= 20 {
         return Response::network_error(NetworkError::Internal("Too many redirects".into()));
@@ -1088,8 +1101,15 @@ pub async fn http_redirect_fetch(
     let recursive_flag = request.redirect_mode != RedirectMode::Manual;
 
     // Step 22: Return the result of running main fetch given fetchParams and recursive.
-    let fetch_response =
-        main_fetch(request, cache, recursive_flag, target, done_chan, context).await;
+    let fetch_response = main_fetch(
+        fetch_params,
+        cache,
+        recursive_flag,
+        target,
+        done_chan,
+        context,
+    )
+    .await;
 
     // TODO: timing allow check
     context
@@ -1107,12 +1127,13 @@ pub async fn http_redirect_fetch(
 /// [HTTP network or cache fetch](https://fetch.spec.whatwg.org#http-network-or-cache-fetch)
 #[async_recursion]
 async fn http_network_or_cache_fetch(
-    request: &mut Request,
+    fetch_params: &mut FetchParams,
     authentication_fetch_flag: bool,
     cors_flag: bool,
     done_chan: &mut DoneChannel,
     context: &FetchContext,
 ) -> Response {
+    let request = &mut fetch_params.request;
     // Step 1. Let request be fetchParams’s request.
     // NOTE: We get request as an argument (Fetchparams are not implemented, see #33616)
 
@@ -1604,7 +1625,7 @@ async fn http_network_or_cache_fetch(
 
         // Step 14.4 Set response to the result of running HTTP-network-or-cache fetch given fetchParams and true.
         response = http_network_or_cache_fetch(
-            http_request,
+            fetch_params,
             true, /* authentication flag */
             cors_flag,
             done_chan,
@@ -2075,8 +2096,9 @@ async fn cors_preflight_fetch(
     }
 
     // Step 6
+    let mut fetch_params = FetchParams::new(preflight);
     let response =
-        http_network_or_cache_fetch(&mut preflight, false, false, &mut None, context).await;
+        http_network_or_cache_fetch(&mut fetch_params, false, false, &mut None, context).await;
     // Step 7
     if cors_check(request, &response).is_ok() && response.status.code().is_success() {
         // Substep 1
