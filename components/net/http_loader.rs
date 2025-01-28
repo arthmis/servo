@@ -1823,7 +1823,6 @@ async fn http_network_fetch(
 ) -> Response {
     let mut response_end_timer = ResponseEndTimer(Some(context.timing.clone()));
 
-
     // Step 1: Let request be fetchParams’s request.
     let request = &mut fetch_params.request;
 
